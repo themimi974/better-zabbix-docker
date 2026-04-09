@@ -1,7 +1,6 @@
 services:
   zabbix-server:
     image: ${ZABBIX_SERVER_IMAGE:-zabbix/zabbix-server-pgsql:ubuntu-7.4-latest}
-    container_name: server
     restart: unless-stopped
     ports:
       - "10051:10051"
@@ -12,14 +11,14 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD-zabbix}
       POSTGRES_DB: ${POSTGRES_DB-zabbix}
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     networks:
       - network-zabbix
 
   zabbix-frontend:
     image: ${ZABBIX_FRONTEND_IMAGE:-zabbix/zabbix-web-nginx-pgsql:ubuntu-7.4-latest}
     restart: unless-stopped
-    container_name: frontend
     ports:
       - "8080:8080"
       - "8443:8443"
@@ -37,8 +36,7 @@ services:
       - network-zabbix
 
   zabbix-agent:
-    image:  ${ZABBIX_AGENT_IMAGE:-zabbix/zabbix-agent:ubuntu-7.4-latest}
-    container_name: zabbix-agent
+    image: ${ZABBIX_AGENT_IMAGE:-zabbix/zabbix-agent2:ubuntu-7.4-latest}
     restart: unless-stopped
     ports:
       - "10050:10050"
@@ -57,7 +55,6 @@ services:
   postgres:
     image: ${POSTGRES_IMAGE:-postgres:latest}
     # command: -c ssl=on -c ssl_cert_file=/run/secrets/server-cert.pem -c ssl_key_file=/run/secrets/server-key.pem -c ssl_ca_file=/run/secrets/root-ca.pem
-    container_name: postgres
     restart: unless-stopped
     ports:
       - "5432:5432"
@@ -68,13 +65,17 @@ services:
       POSTGRES_USER: ${POSTGRES_USER-zabbix}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD-zabbix}
       POSTGRES_DB: ${POSTGRES_DB-zabbix}
-      PG_DATA: /var/lib/postgresql/data/pgdata
+      PGDATA: /var/lib/postgresql/data/pgdata
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER-zabbix}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - network-zabbix
 
   grafana:
     image: ${GRAFANA_IMAGE:-grafana/grafana}
-    container_name: grafana
     restart: unless-stopped
     ports:
       - "3000:3000"

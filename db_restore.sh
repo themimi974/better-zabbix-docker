@@ -1,6 +1,6 @@
 #!/bin/sh
 # RUN AFTER UPGRADING POSTGRES IMAGE.
 
-docker compose up -d db
-cat pgdump.sql | docker compos postgres zabbix_db_1 psql -U zabbixadmin -d zabbix
+docker compose up -d postgres
+cat pgdump.sql | docker compose exec -T postgres psql -U zabbix -d zabbix
 docker compose down
