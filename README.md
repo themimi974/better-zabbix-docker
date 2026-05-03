@@ -6,272 +6,265 @@
 - [Official Zabbix Dockerfiles](https://github.com/zabbix/zabbix-docker)
 - [Zabbix plugin for Grafana dashboard](https://github.com/grafana/grafana-zabbix)
 
-![Architecture Scheme](./.images/scheme.excalidraw.png)
+---
 
-## Architecture
+## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                      Network: network-zabbix                          │
-│                                                                     │
-│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐          │
-│  │ postgres-   │───│ postgres-   │   │ zabbix-     │          │
-│  │ primary    │◄──│ replica    │   │ server-1    │          │
-│  │   :5432   │   │   :5433   │   │   :10051   │          │
-│  └──────────────┘   └──────────────┘   └──────┬───────┘          │
-│                                              │                   │
-│                                    ┌─────────┴─────────┐             │
-│                                    │ zabbix-server-2 │             │
-│                                    │ (passive)      │             │
-│                                    │   :10052      │             │
-│                                    └───────┬────────┘             │
-│                                            │                     │
-│      ┌───────────────────────────────────────┼───────────────┐      │
-│      │                                       │               │      │
-│      ▼                                       ▼               ▼      │
-│  ┌──────────┐                           ┌──────────┐         │
-│  │ frontend │                           │ grafana  │         │
-│  │ :8080   │                           │ :3000   │         │
-│  └──────────┘                           └──────────┘         │
-└─────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│                            YOUR INFRASTRUCTURE                              │
+│                                                                            │
+│   ┌────────────────────────────────────────────────────────────────────┐   │
+│   │                    network-zabbix (Docker Bridge)                 │   │
+│   │                                                                    │   │
+│   │  ┌──────────────┐       ┌──────────────┐       ┌──────────────┐   │   │
+│   │  │ postgres-   │       │ postgres-    │       │ zabbix-     │   │   │
+│   │  │ primary     │◄─────►│ replica      │       │ server-1    │   │   │
+│   │  │ (port 5432) │  R/W  │ (port 5433)  │       │ (port 10051)│   │   │
+│   │  │   [MAIN]    │       │  [STANDBY]   │       │  [ACTIVE]  │   │   │
+│   │  └──────────────┘       └──────────────┘       └──────┬───────┘   │   │
+│   │                                                    │             │   │
+│   │                                    ┌───────────────┴────────┐     │   │
+│   │                                    │  zabbix-server-2      │     │   │
+│   │                                    │  (port 10052)         │     │   │
+│   │                                    │  [STANDBY/FAILOVER]   │     │   │
+│   │                                    └───────────┬────────────┘     │   │
+│   │                                                    │             │   │
+│   │    ┌───────────────────────────────────────────────┼─────────┐     │   │
+│   │    │                                               │         │   │
+│   │    ▼                                               ▼         ▼     │
+│   │  ┌──────────┐                                 ┌──────────┐       │
+│   │  │ frontend │                                 │ grafana  │       │
+│   │  │ :8080   │                                 │  :3000  │       │
+│   │  └────────┘                                 └─────────┘       │
+│   └────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│   ACCESSIBLE FROM YOUR COMPUTER:                                                │
+│   ┌────────────────┬─────────────┬──────────────────────────────┐              │
+│   │ Service        │ Port        │ URL                        │              │
+│   ├────────────────┼─────────────┼──────────────────────────────┤              │
+│   │ Zabbix Web     │ 8080       │ http://localhost:8080      │              │
+│   │ Grafana       │ 3000       │ http://localhost:3000       │              │
+│   └────────────────┴─────────────┴──────────────────────────────┘              │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Components
-
-| Component | Description | Ports |
-|-----------|-------------|-------|
-| `postgres-primary` | PostgreSQL 17 primary database | 5432 |
-| `postgres-replica` | PostgreSQL read replica (streaming) | 5433 |
-| `zabbix-server-1` | Zabbix Server (active/HA) | 10051 |
-| `zabbix-server-2` | Zabbix Server (passive/HA) | 10052 |
-| `zabbix-frontend` | Zabbix Web UI (Nginx + PHP) | 8080, 8443 |
-| `zabbix-agent` | Zabbix Agent for cluster | 10050 |
-| `grafana` | Grafana dashboards | 3000 |
-
-### HA Features
-
-- **PostgreSQL**: Streaming replication with hot standby
-- **Zabbix Server**: Active/Passive HA with automatic failover
-- **Failover Delay**: 10 seconds (configurable)
+---
 
 ## Quick Start
 
-### 1. Clone Repository
+### 1. Clone and Start
 
 ```shell
 git clone https://github.com/themimi974/better-zabbix-docker.git
 cd better-zabbix-docker
-```
-
-### 2. Configure Environment (Optional)
-
-```shell
-cp .env .env.local  # Optional: create local copy
-nano .env           # Edit configuration
-```
-
-### 3. Start Services
-
-```shell
 docker compose up -d
 ```
 
-> **Note**: On first start, PostgreSQL primary must be healthy before replica starts. This is expected behavior for replication setup.
+Wait ~2-3 minutes for first startup. Then access:
+- **Zabbix UI**: http://localhost:8080 (Admin / zabbix)
+- **Grafana**: http://localhost:3000 (admin / 12345)
 
-⏱️ **First launch takes 2-3 minutes** while PostgreSQL initializes, replication syncs, and Zabbix servers start.
-
-### 4. Verify Installation
+### 2. Verify HA is Working
 
 ```shell
-docker compose ps
+docker compose exec postgres-primary psql -U zabbix -c "SELECT name, status FROM ha_node;"
 ```
 
 Expected output:
 ```
-NAME                IMAGE                              STATUS
-postgres-primary   postgres:17-alpine                Up (healthy)
-postgres-replica  postgres:17-alpine                Up (healthy)
-zabbix-server-1   zabbix/zabbix-server-pgsql:...    Up
-zabbix-server-2   zabbix/zabbix-server-pgsql:...    Up
-zabbix-frontend  zabbix/zabbix-web-nginx-pgsql:...  Up
-zabbix-agent     zabbix/zabbix-agent2:...           Up
-grafana          grafana/grafana:12.4.2           Up
+     name      | status 
+--------------+--------
+ zabbix-server-1 |      3   ← Active
+ zabbix-server-2 |      0   ← Standby
 ```
 
-### 5. Check HA Status
+Status codes: `3` = Active, `0` = Standby, `1` = Stopped, `2` = Unavailable
 
+---
+
+## Daily Administration
+
+### 🔴 What Happens When a Server Fails?
+
+```
+BEFORE FAILURE:                 AFTER FAILURE:
+
+┌─────────────────┐          ┌─────────────────┐
+│ zabbix-server-1   │          │ zabbix-server-1   │ ✗ CRASHED
+│ [ACTIVE] ✅     │          │ [STOPPED] ❌    │
+└────────┬────────┘          └────────┬────────┘
+         │                            ┌───┘
+         │ 10 seconds later         │ FAILS OVER
+         ▼                          ▼
+┌─────────────────┐          ┌─────────────────┐
+│ zabbix-server-2  │ ──────►  │ zabbix-server-2  │
+│ [STANDBY]       │          │ [ACTIVE] ✅     │
+└─────────────────┘          └─────────────────┘
+```
+
+**You don't need to do anything!** Zabbix automatically detects the failure and promotes server-2 to active.
+
+### 🔧 Common Tasks
+
+#### Check Status
 ```shell
-# Check Zabbix HA
-docker compose exec zabbix-server-1 zabbix_ha_status
+# View all running containers
+docker compose ps
 
-# Check PostgreSQL replication
-docker compose exec postgres-replica psql -U zabbix -c "SELECT now() - pg_last_xact_replay_timestamp() AS replication_lag;"
+# Check HA nodes in database
+docker compose exec postgres-primary psql -U zabbix -c "SELECT * FROM ha_node;"
 ```
 
-## Configuration
+#### Restart a Zabbix Server
+```shell
+# Restart server-1 (will become standby if server-2 is active)
+docker compose restart zabbix-server-1
 
-### Environment Variables
+# Restart server-2 (will become standby if server-1 is active)
+docker compose restart zabbix-server-2
+```
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `POSTGRES_USER` | `zabbix` | PostgreSQL username |
-| `POSTGRES_PASSWORD` | `zabbix` | PostgreSQL password |
-| `POSTGRES_DB` | `zabbix` | Database name |
-| `POSTGRES_REPLICA_USER` | `repl_user` | Replication user |
-| `POSTGRES_REPLICA_PASSWORD` | `repl_password` | Replication password |
-| `ZBX_SERVER_ID_1` | `1` | Server 1 ID |
-| `ZBX_SERVER_ID_2` | `2` | Server 2 ID |
-| `ZBX_ENABLEHA` | `1` | Enable HA mode |
-| `ZBX_HA_FAILOVER_DELAY` | `10s` | Failover delay |
-| `GRAFANA_USER` | `admin` | Grafana admin |
-| `GRAFANA_SECRET` | `12345` | Grafana password |
-| `TZ` | `Asia/Yekaterinburg` | Timezone |
+#### Stop Active Server (Test Failover!)
+```shell
+# Stop the active server to test failover
+docker compose stop zabbix-server-1
 
-> ⚠️ **Security Note**: Change default passwords in production!
+# Check who's now active
+docker compose exec postgres-primary psql -U zabbix -c "SELECT name, status FROM ha_node;"
 
-## Services & Ports
+# Frontend should still work!
+curl -I http://localhost:8080
+```
 
-| Service | Internal Port | External Port | URL |
-|---------|---------------|---------------|-----|
-| Zabbix Frontend | 8080 | 8080 | [http://localhost:8080](http://localhost:8080) |
-| Zabbix Frontend SSL | 8443 | 8443 | https://localhost:8443 |
-| Grafana | 3000 | 3000 | [http://localhost:3000](http://localhost:3000) |
-| Zabbix Agent | 10050 | 10050 | (internal) |
-| Zabbix Server-1 | 10051 | 10051 | (internal) |
-| Zabbix Server-2 | 10052 | 10052 | (internal) |
-| PostgreSQL Primary | 5432 | - | (internal only) |
-| PostgreSQL Replica | 5433 | - | (internal only) |
+#### Bring Everything Down/Up
+```shell
+# Stop all services
+docker compose down
 
-## Usage
+# Start all services
+docker compose up -d
+```
 
-### Zabbix Web Interface
+#### View Logs
+```shell
+# All services
+docker compose logs -f
 
-**URL:** [http://localhost:8080](http://localhost:8080)
+# Specific server only
+docker compose logs -f zabbix-server-1
+docker compose logs -f zabbix-server-2
+```
 
-**Default Credentials:**
-- **Username:** `Admin`
-- **Password:** `zabbix`
+---
 
-#### Configure Zabbix Agent Connection
+## Components Reference
 
-1. Navigate to **Configuration** → **Hosts**
-2. Click on **Zabbix server** host
-3. Go to **Interfaces** tab
-4. Change **Connect to** from IP to **DNS**
-5. Set **DNS name** to `zabbix-agent`
-6. **Update** the host
+| Container | Role | Port | Description |
+|-----------|------|------|-------------|
+| `postgres-primary` | Primary DB | 5432 | Main database (read/write) |
+| `postgres-replica` | Standby DB | 5433 | Read-only replica |
+| `zabbix-server-1` | Active/Standby | 10051 | Primary server node |
+| `zabbix-server-2` | Active/Standby | 10052 | Secondary server node |
+| `zabbix-frontend` | Web UI | 8080/8443 | Zabbix web interface |
+| `zabbix-agent` | Agent | 10050 | Monitors the cluster |
+| `grafana` | Dashboards | 3000 | Grafana visualization |
 
-![Zabbix Agent Settings](./.images/zabbix-agent-settings.png)
-![Zabbix Agent Check](./.images/zabbix-agent-check.png)
-
-### Grafana Dashboard
-
-**URL:** [http://localhost:3000](http://localhost:3000)
-
-**Default Credentials:**
-- **Username:** `admin`  
-- **Password:** `12345`
-
-> 💡 Anonymous access is enabled by default (see `grafana/grafana.ini`)
-
-#### Test Zabbix Data Source
-
-1. Go to **Connections** → **Data sources**
-2. Select **Zabbix** data source
-3. Click **Test** button
-4. Should show "Data source is working"
-
-![Data Source Test](./.images/data-source-test.png)
+---
 
 ## Troubleshooting
 
-### Check Service Logs
+### ❌ "Only one server in ha_node table"
 
+**Problem**: Only one server registered, HA not working.
+
+**Solution**:
 ```shell
-# All services
-docker compose logs --tail=10 -f
-
-# Specific service
-docker compose logs -f zabbix-server-1
-docker compose logs -f postgres-primary
+# Restart both servers
+docker compose restart zabbix-server-1 zabbix-server-2
+wait 30 seconds
+docker compose exec postgres-primary psql -U zabbix -c "SELECT * FROM ha_node;"
 ```
 
-### Check HA Status
+### ❌ "Frontend shows connection error"
 
+**Problem**: Can't connect to Zabbix server.
+
+**Solution**:
 ```shell
-# Zabbix HA
-docker compose exec zabbix-server-1 zabbix_ha_status
+# Check which server is active
+docker compose exec postgres-primary psql -U zabbix -c "SELECT name, status FROM ha_node;"
 
-# PostgreSQL replication lag
-docker compose exec postgres-replica psql -U zabbix -c "SELECT * FROM pg_stat_replication;"
+# Restart frontend
+docker compose restart zabbix-frontend
 ```
 
-### Common Issues
+### ❌ "Server keeps restarting"
 
-#### 1. Replica Not Syncing
+**Problem**: Server container crashes continuously.
 
+**Solution**:
 ```shell
-# Check replication status
-docker compose logs postgres-replica
-
-# Verify primary has replication user
-docker compose exec postgres-primary psql -U zabbix -c "SELECT * FROM pg_replication_slots;"
-```
-
-#### 2. Zabbix HA Not Working
-
-```shell
-# Check both servers are running
-docker compose ps
-
-# Check HA status
-docker compose exec zabbix-server-1 zabbix_ha_status
-
 # Check logs
-docker compose logs zabbix-server-1 zabbix-server-2
+docker compose logs zabbix-server-1
+
+# Restart with fresh database (last resort)
+docker compose down -v
+docker compose up -d
 ```
 
-#### 3. Can't Access Web Interface
+---
 
-```shell
-# Check if ports are available
-netstat -tulpn | grep -E ':(8080|3000|10051)'
+## Network Configuration
 
-# Check container status
-docker compose ps
-```
+### External Access
 
-## Failover Scenarios
+| Service | Host Port | Container | Purpose |
+|---------|----------|-----------|---------|
+| Zabbix UI | 8080 | 80 | HTTP web interface |
+| Zabbix UI | 8443 | 443 | HTTPS web interface |
+| Grafana | 3000 | 3000 | Dashboards |
 
-| Scenario | Behavior |
-|----------|----------|
-| Active Zabbix Server fails | Passive takes over within 10s |
-| Primary PostgreSQL fails | Manual failover required to replica |
-| Frontend container fails | Restarted automatically |
-| Host machine fails | All containers restart on healthy host |
+### Internal Ports (not exposed)
 
-## Performance Tuning
+| Service | Internal Port | Used By |
+|---------|--------------|---------|
+| Zabbix Server-1 | 10051 | Frontend, Agents |
+| Zabbix Server-2 | 10051 | Frontend, Agents |
+| PostgreSQL | 5432 | Servers |
+| PostgreSQL Replica | 5432 | Read queries |
 
-For better performance with large datasets:
+---
 
-```yaml
-# Add to zabbix-server environment in compose.yaml
-ZBX_CACHESIZE: "128M"
-ZBX_CACHEUPDATEFREQUENCY: "60"
-ZBX_STARTDBSYNCERS: "4"
-```
+## Configuration
 
-## Security Considerations
+### Environment Variables (.env)
 
-### Production Deployment Checklist
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `POSTGRES_USER` | `zabbix` | Database user |
+| `POSTGRES_PASSWORD` | `zabbix` | Database password |
+| `ZBX_HANODENAME_1` | `zabbix-server-1` | Node 1 name |
+| `ZBX_HANODENAME_2` | `zabbix-server-2` | Node 2 name |
+| `GRAFANA_USER` | `admin` | Grafana admin |
+| `GRAFANA_SECRET` | `12345` | Grafana password |
+| `TZ` | `UTC` | Timezone |
 
-- [ ] Change default passwords in `.env`
-- [ ] Enable PostgreSQL TLS
-- [ ] Use strong database passwords
-- [ ] Restrict access to ports (use firewall/security groups)
-- [ ] Enable HTTPS for Zabbix frontend
-- [ ] Configure proper backup strategy
-- [ ] Enable network policies for container isolation
+> ⚠️ **Production**: Change default passwords in `.env` before deploying!
+
+---
+
+## Security Checklist
+
+Before production use:
+
+- [ ] Change `POSTGRES_PASSWORD` in `.env`
+- [ ] Change `GRAFANA_SECRET` in `.env`  
+- [ ] Enable firewall rules (only allow ports 8080, 3000)
+- [ ] Enable HTTPS (configure SSL certificates)
+- [ ] Configure regular database backups
+
+---
 
 ## References
 
@@ -279,5 +272,3 @@ ZBX_STARTDBSYNCERS: "4"
 - [PostgreSQL Replication](https://www.postgresql.org/docs/current/static/high-availability.html)
 - [Official Zabbix Docker Images](https://github.com/zabbix/zabbix-docker)
 - [Zabbix Plugin for Grafana](https://github.com/grafana/grafana-zabbix)
-- [Zabbix Documentation](https://www.zabbix.com/documentation/current/)
-- [Grafana Documentation](https://grafana.com/docs/)
