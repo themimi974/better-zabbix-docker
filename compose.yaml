@@ -1,21 +1,131 @@
 services:
-  zabbix-server:
+  # ============================================================================
+  # PostgreSQL Database Cluster
+  # ============================================================================
+  postgres-primary:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-primary:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-zabbix}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zabbix}
+      POSTGRES_DB: ${POSTGRES_DB:-zabbix}
+      PGDATA: /var/lib/postgresql/data/pgdata
+      # Replication config
+      POSTGRES_REPLICATION_USER: ${POSTGRES_REPLICA_USER:-repl_user}
+      POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICA_PASSWORD:-repl_password}
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - max_wal_senders=10
+      - -c
+      - wal_keep_size=1GB
+      - -c
+      - hot_standby=on
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-zabbix}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - network-zabbix
+
+  postgres-replica:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-replica:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-zabbix}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zabbix}
+      POSTGRES_DB: ${POSTGRES_DB:-zabbix}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    command:
+      - postgres
+      - -c
+      - hot_standby=on
+      - -c
+      - primary_conninfo=host=postgres-primary port=5432 user=${POSTGRES_REPLICA_USER:-repl_user} password=${POSTGRES_REPLICA_PASSWORD:-repl_password}
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h postgres-primary -U ${POSTGRES_USER:-zabbix}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - network-zabbix
+
+  # ============================================================================
+  # Zabbix Server Cluster (Active/Passive HA)
+  # ============================================================================
+  zabbix-server-1:
     image: ${ZABBIX_SERVER_IMAGE:-zabbix/zabbix-server-pgsql:ubuntu-7.4-latest}
     restart: unless-stopped
     ports:
       - "10051:10051"
     environment:
-      DB_SERVER_HOST: postgres
+      DB_SERVER_HOST: postgres-primary
       DB_SERVER_PORT: 5432
-      POSTGRES_USER: ${POSTGRES_USER-zabbix}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD-zabbix}
-      POSTGRES_DB: ${POSTGRES_DB-zabbix}
+      POSTGRES_USER: ${POSTGRES_USER:-zabbix}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zabbix}
+      POSTGRES_DB: ${POSTGRES_DB:-zabbix}
+      # HA Configuration - correct variable names for Zabbix Docker
+      ZBX_HANODENAME: ${ZBX_HANODENAME_1:-zabbix-server-1}
+      ZBX_NODEADDRESS: ${ZBX_NODEADDRESS_1:-zabbix-server-1:10051}
+      ZBX_AUTOHANODENAME: "true"
+      ZBX_AUTONODEADDRESS: "true"
     depends_on:
-      postgres:
+      postgres-primary:
         condition: service_healthy
     networks:
       - network-zabbix
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
 
+  zabbix-server-2:
+    image: ${ZABBIX_SERVER_IMAGE:-zabbix/zabbix-server-pgsql:ubuntu-7.4-latest}
+    restart: unless-stopped
+    ports:
+      - "10052:10051"
+    environment:
+      DB_SERVER_HOST: postgres-primary
+      DB_SERVER_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-zabbix}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zabbix}
+      POSTGRES_DB: ${POSTGRES_DB:-zabbix}
+      # HA Configuration - correct variable names for Zabbix Docker
+      ZBX_HANODENAME: ${ZBX_HANODENAME_2:-zabbix-server-2}
+      ZBX_NODEADDRESS: ${ZBX_NODEADDRESS_2:-zabbix-server-2:10051}
+      ZBX_AUTOHANODENAME: "true"
+      ZBX_AUTONODEADDRESS: "true"
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      zabbix-server-1:
+        condition: service_started
+    networks:
+      - network-zabbix
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+
+  # ============================================================================
+  # Zabbix Frontend (Web Interface)
+  # ============================================================================
   zabbix-frontend:
     image: ${ZABBIX_FRONTEND_IMAGE:-zabbix/zabbix-web-nginx-pgsql:ubuntu-7.4-latest}
     restart: unless-stopped
@@ -23,59 +133,47 @@ services:
       - "8080:8080"
       - "8443:8443"
     environment:
-      DB_SERVER_HOST: postgres
-      POSTGRES_USER: ${POSTGRES_USER-zabbix}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD-zabbix}
-      POSTGRES_DB: ${POSTGRES_DB-zabbix}
-      PHP_TZ: ${TZ}
-      ZBX_SERVER_HOST: zabbix-server
-      ZBX_SERVER_PORT: 10051
+      DB_SERVER_HOST: postgres-primary
+      DB_SERVER_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-zabbix}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zabbix}
+      POSTGRES_DB: ${POSTGRES_DB:-zabbix}
+      PHP_TZ: ${TZ:-Asia/Yekaterinburg}
+      # Leave empty to auto-discover active node from ha_node table
+      ZBX_SERVER_HOST: ""
+      ZBX_SERVER_PORT: ""
     depends_on:
-      - zabbix-server
+      - zabbix-server-1
+      - zabbix-server-2
     networks:
       - network-zabbix
 
+  # ============================================================================
+  # Zabbix Agent (for monitoring the cluster itself)
+  # ============================================================================
   zabbix-agent:
     image: ${ZABBIX_AGENT_IMAGE:-zabbix/zabbix-agent2:ubuntu-7.4-latest}
     restart: unless-stopped
     ports:
       - "10050:10050"
     environment:
-      ZBX_ACTIVE_ALLOW: false
-      TZ: ${TZ}
-      ZBX_SERVER_HOST: zabbix-server
+      ZBX_ACTIVE_ALLOW: "true"
+      TZ: ${TZ:-Asia/Yekaterinburg}
+      ZBX_SERVER_HOST: zabbix-server-1,zabbix-server-2
       ZBX_SERVER_PORT: 10051
       ZBX_HOSTNAME: zabbix-agent
       ZBX_HOSTNAMEITEM: system.hostname
     depends_on:
-      - zabbix-server
+      - zabbix-server-1
+      - zabbix-server-2
     networks:
       - network-zabbix
 
-  postgres:
-    image: ${POSTGRES_IMAGE:-postgres:latest}
-    # command: -c ssl=on -c ssl_cert_file=/run/secrets/server-cert.pem -c ssl_key_file=/run/secrets/server-key.pem -c ssl_ca_file=/run/secrets/root-ca.pem
-    restart: unless-stopped
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres:/var/lib/postgresql/data
-      # - pgsql_socket:/var/run/postgresql/
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER-zabbix}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD-zabbix}
-      POSTGRES_DB: ${POSTGRES_DB-zabbix}
-      PGDATA: /var/lib/postgresql/data/pgdata
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER-zabbix}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - network-zabbix
-
+  # ============================================================================
+  # Grafana (Dashboards)
+  # ============================================================================
   grafana:
-    image: ${GRAFANA_IMAGE:-grafana/grafana}
+    image: ${GRAFANA_IMAGE:-grafana/grafana:12.4.2}
     restart: unless-stopped
     ports:
       - "3000:3000"
@@ -83,7 +181,7 @@ services:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_SECRET:-12345}
       GF_INSTALL_PLUGINS: alexanderzobnin-zabbix-app
-      TZ: ${TZ}
+      TZ: ${TZ:-Asia/Yekaterinburg}
     user: "472"
     volumes:
       - grafana:/var/lib/grafana
@@ -94,10 +192,17 @@ services:
     networks:
       - network-zabbix
 
+# ============================================================================
+# Volumes
+# ============================================================================
 volumes:
-  postgres: {}
+  postgres-primary: {}
+  postgres-replica: {}
   grafana: {}
 
+# ============================================================================
+# Networks
+# ============================================================================
 networks:
   network-zabbix:
     driver: bridge
